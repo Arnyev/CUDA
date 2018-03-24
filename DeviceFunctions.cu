@@ -5,15 +5,15 @@
 __global__ void CUDADrawPixels(uchar4 *pixels)
 {
 	int y = threadIdx.x + blockIdx.x * 1000;
-	pixels[y] = { (unsigned char)255,(unsigned char)255,(unsigned char)255,(unsigned char)255 };
+	pixels[y] = { (unsigned char)y/100,(unsigned char)y/1000,(unsigned char)y,(unsigned char)255 };
 }
 
-void RunCUDA(uchar4 *dst)
+void RunCUDA(uchar4 *d_destinationBitmap, int imageWidth, int imageHeight)
 {
 	dim3 threads(1000, 1, 1);
 	dim3 grid(100);
 
-	CUDADrawPixels << <grid, threads >> >(dst);
+	CUDADrawPixels << <grid, threads >> >(d_destinationBitmap);
 
-	getLastCudaError("Mandelbrot1 kernel execution failed.\n");
+	getLastCudaError("CUDADrawPixels kernel execution failed.\n");
 }

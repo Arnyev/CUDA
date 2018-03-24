@@ -6,23 +6,22 @@
 #include <helper_functions.h>
 #include <helper_cuda.h>
 
+#define REFRESH_DELAY     10 
+
 GLuint gl_PBO, gl_Tex, gl_Shader;
 struct cudaGraphicsResource *cuda_pbo_resource;
 
-uchar4 *h_Src = 0;
-uchar4 *d_dst = NULL;
-
-int imageW = 800, imageH = 600;
+uchar4 *h_imageBitmap = 0;
+uchar4 *d_imageBitmap = NULL;
 
 StopWatchInterface *hTimer = NULL;
 
 int fpsCount = 0;
 int fpsLimit = 15;
 unsigned int frameCount = 0;
+int imageW = 800, imageH = 600;
 
-#define REFRESH_DELAY     10 
-
-void RunCUDA(uchar4 *dst);
+void RunCUDA(uchar4 *d_destinationBitmap, int imageWidth, int imageHeight);
 
 typedef BOOL(WINAPI *PFNWGLSWAPINTERVALFARPROC)(int);
 void setVSync(int interval)
@@ -43,7 +42,7 @@ void computeFPS()
 	{
 		char fps[256];
 		float ifps = 1.f / (sdkGetAverageTimerValue(&hTimer) / 1000.f);
-		sprintf(fps, "<CUDA %s Set> %3.1f fps", "Mandelbrot", ifps);
+		sprintf(fps, "<CUDA %s Set> %3.1f fps", "CUDA", ifps);
 		glutSetWindowTitle(fps);
 		fpsCount = 0;
 
@@ -58,8 +57,8 @@ void renderImage()
 
 	checkCudaErrors(cudaGraphicsMapResources(1, &cuda_pbo_resource, 0));
 	size_t num_bytes;
-	checkCudaErrors(cudaGraphicsResourceGetMappedPointer((void **)&d_dst, &num_bytes, cuda_pbo_resource));
-	RunCUDA(d_dst);
+	checkCudaErrors(cudaGraphicsResourceGetMappedPointer((void **)&d_imageBitmap, &num_bytes, cuda_pbo_resource));
+	RunCUDA(d_imageBitmap, imageW, imageH);
 	checkCudaErrors(cudaGraphicsUnmapResources(1, &cuda_pbo_resource, 0));
 }
 
@@ -99,10 +98,10 @@ void displayFunc(void)
 
 void cleanup()
 {
-	if (h_Src)
+	if (h_imageBitmap)
 	{
-		free(h_Src);
-		h_Src = 0;
+		free(h_imageBitmap);
+		h_imageBitmap = 0;
 	}
 
 	sdkStopTimer(&hTimer);
@@ -170,10 +169,10 @@ GLuint compileASMShader(GLenum program_type, const char *code)
 
 void initOpenGLBuffers(int w, int h)
 {
-	if (h_Src)
+	if (h_imageBitmap)
 	{
-		free(h_Src);
-		h_Src = 0;
+		free(h_imageBitmap);
+		h_imageBitmap = 0;
 	}
 
 	if (gl_Tex)
@@ -190,7 +189,7 @@ void initOpenGLBuffers(int w, int h)
 	}
 
 	// allocate new buffers
-	h_Src = (uchar4 *)malloc(w * h * 4);
+	h_imageBitmap = (uchar4 *)malloc(w * h * 4);
 
 	glEnable(GL_TEXTURE_2D);
 	glGenTextures(1, &gl_Tex);
@@ -199,11 +198,11 @@ void initOpenGLBuffers(int w, int h)
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, h_Src);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, 0);
 
 	glGenBuffers(1, &gl_PBO);
 	glBindBuffer(GL_PIXEL_UNPACK_BUFFER_ARB, gl_PBO);
-	glBufferData(GL_PIXEL_UNPACK_BUFFER_ARB, w * h * 4, h_Src, GL_STREAM_COPY);
+	glBufferData(GL_PIXEL_UNPACK_BUFFER_ARB, w * h * 4, 0, GL_STREAM_COPY);
 
 	//While a PBO is registered to CUDA, it can't be used
 	//as the destination for OpenGL drawing calls.
