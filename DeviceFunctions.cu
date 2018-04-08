@@ -12,16 +12,17 @@ void __syncthreads();
 #include "helper_math.h"
 #include "math_constants.h"
 
-#define BOUND 100.0f
+#define BOUND 30.0f
 #define BOUNDINT (int)BOUND
 #define RADIUS 2
-#define CIRCLECOUNT 300
-#define COLLISIONDIST 10.0f
+#define CIRCLECOUNT 20000
+#define COLLISIONDIST 7.0f
+#define COLLISIONDISTINT (int)(COLLISIONDIST+1.0f)
 #define SPRINGFORCE 0.5f
-#define GRAVITY -0.1f
-#define DAMPING 0.02f
+#define GRAVITY -0.003f
+#define DAMPING 0.00f
 #define BOUNDARYFORCE 0.5f
-#define SHEARFORCE 0.2f
+#define SHEARFORCE 0.0f
 
 float2* d_speeds = 0;
 float2* d_positions = 0;
@@ -37,9 +38,12 @@ __device__ void ProcessCollisions(int threadNum, float2* positions, float2* spee
 
 __global__ void CUDADrawPixels(uchar4 *pixels, int imageWidth, int imageHeight, float2* positions, float2* speeds)
 {
-	int threadNum = threadIdx.x;
+	int threadNum = threadIdx.x + blockDim.x*blockIdx.x;
 	if (threadNum >= CIRCLECOUNT)
 		return;
+
+	speeds[threadNum].x *= 0.9f;
+	speeds[threadNum].y *= 0.9f;
 
 	positions[threadNum].x += speeds[threadNum].x;
 	positions[threadNum].y += speeds[threadNum].y;
@@ -68,6 +72,7 @@ __global__ void CUDADrawPixels(uchar4 *pixels, int imageWidth, int imageHeight, 
 	PutCircle(middleIndex, imageWidth, pixels, threadNum);
 
 	speeds[threadNum].y += GRAVITY;
+
 
 	ProcessCollisions(threadNum, positions, speeds);
 }
@@ -158,6 +163,17 @@ __device__ void PutCircle(int middleIndex, int imageWidth, uchar4* pixels, int t
 	pixels[middleIndex + (imageWidth * 3) + 1] = colorWhite;
 }
 
+uint iDivUp(uint a, uint b)
+{
+	return (a % b != 0) ? (a / b + 1) : (a / b);
+}
+
+void computeGridSize(uint n, uint blockSize, uint &numBlocks, uint &numThreads)
+{
+	numThreads = min(blockSize, n);
+	numBlocks = iDivUp(n, numThreads);
+}
+
 void RunCUDA(uchar4 *d_destinationBitmap, int imageWidth, int imageHeight)
 {
 	const size_t arraySize = CIRCLECOUNT * sizeof(float2);
@@ -187,8 +203,8 @@ void RunCUDA(uchar4 *d_destinationBitmap, int imageWidth, int imageHeight)
 
 		for (int i = 0; i < CIRCLECOUNT; i++)
 		{
-			h_positions[i].x = 10 * (i % ((imageWidth - 2 * BOUNDINT) / 10)) + BOUNDINT;
-			h_positions[i].y = 10 * (i / ((imageWidth - 2 * BOUNDINT) / 10)) + BOUNDINT;
+			h_positions[i].x = COLLISIONDISTINT * (i % ((imageWidth - 2 * BOUNDINT) / COLLISIONDISTINT)) + BOUNDINT;
+			h_positions[i].y = COLLISIONDISTINT * (i / ((imageWidth - 2 * BOUNDINT) / COLLISIONDISTINT)) + BOUNDINT;
 			h_speeds[i].x = 0;
 			h_speeds[i].y = 0;
 			//h_positions[i].x = abs((float)rand() / dividerX) + BOUND;
@@ -203,10 +219,11 @@ void RunCUDA(uchar4 *d_destinationBitmap, int imageWidth, int imageHeight)
 
 	checkCudaErrors(cudaMemset(d_destinationBitmap, 0, sizeof(uchar4)* imageWidth* imageHeight));
 
-	dim3 threads(CIRCLECOUNT, 1, 1);
-	dim3 grid(1);
+	uint numThreads, numBlocks;
+	computeGridSize(CIRCLECOUNT, 64, numBlocks, numThreads);
 
-	CUDADrawPixels << <grid, threads >> > (d_destinationBitmap, imageWidth, imageHeight, d_positions, d_speeds);
+
+	CUDADrawPixels << <numBlocks, numThreads >> > (d_destinationBitmap, imageWidth, imageHeight, d_positions, d_speeds);
 
 	getLastCudaError("CUDADrawPixels kernel execution failed.\n");
 }

@@ -6,7 +6,7 @@
 #include <helper_functions.h>
 #include <helper_cuda.h>
 
-#define REFRESH_DELAY     10
+#define REFRESH_DELAY     1
 
 GLuint gl_PBO, gl_Tex, gl_Shader;
 struct cudaGraphicsResource *cuda_pbo_resource;
@@ -19,7 +19,7 @@ StopWatchInterface *hTimer = NULL;
 int fpsCount = 0;
 int fpsLimit = 15;
 unsigned int frameCount = 0;
-int imageW = 800, imageH = 600;
+int imageW = 1900, imageH = 1000;
 
 void RunCUDA(uchar4 *d_destinationBitmap, int imageWidth, int imageHeight);
 
