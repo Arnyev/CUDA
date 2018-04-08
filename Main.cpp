@@ -6,7 +6,7 @@
 #include <helper_functions.h>
 #include <helper_cuda.h>
 
-#define REFRESH_DELAY     10 
+#define REFRESH_DELAY     10
 
 GLuint gl_PBO, gl_Tex, gl_Shader;
 struct cudaGraphicsResource *cuda_pbo_resource;
@@ -270,6 +270,6 @@ int main(int argc, char **argv)
 	glutCloseFunc(cleanup);
 
 	setVSync(0);
-
+	int k = 7;
 	glutMainLoop();
 }
