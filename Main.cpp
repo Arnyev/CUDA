@@ -1,3 +1,5 @@
+#define STB_IMAGE_IMPLEMENTATION
+#include <stb_image.h>
 #include <helper_gl.h>
 #include <GL/wglew.h>
 #include <GL/freeglut.h>
@@ -11,17 +13,20 @@
 GLuint gl_PBO, gl_Tex, gl_Shader;
 struct cudaGraphicsResource *cuda_pbo_resource;
 
-uchar4 *h_imageBitmap = 0;
+uchar4 *h_imageBitmap = NULL;
 uchar4 *d_imageBitmap = NULL;
+uchar4 *d_logo = NULL;
+stbi_uc* pixels = NULL;
 
 StopWatchInterface *hTimer = NULL;
 
 int fpsCount = 0;
 int fpsLimit = 15;
 unsigned int frameCount = 0;
-int imageW = 1900, imageH = 1000;
+int imageW = 1800, imageH = 1000;
+int logoW = 240, logoH = 234; 
 
-void RunCUDA(uchar4 *d_destinationBitmap, int imageWidth, int imageHeight);
+void RunCUDA(uchar4 *d_destinationBitmap, uchar4 *d_logo, int logoWidth, int logoHeight, int imageWidth, int imageHeight);
 
 typedef BOOL(WINAPI *PFNWGLSWAPINTERVALFARPROC)(int);
 void setVSync(int interval)
@@ -35,20 +40,22 @@ void setVSync(int interval)
 
 void computeFPS()
 {
+	char fps[256];
 	frameCount++;
 	fpsCount++;
+	sprintf(fps, "Computed frames %d", frameCount);
+	glutSetWindowTitle(fps);
+	//if (fpsCount == fpsLimit)
+	//{
+	//	char fps[256];
+	//	float ifps = 1.f / (sdkGetAverageTimerValue(&hTimer) / 1000.f);
+	//	sprintf(fps, "<CUDA %s Set> %3.1f fps", "CUDA", ifps);
+	//	glutSetWindowTitle(fps);
+	//	fpsCount = 0;
 
-	if (fpsCount == fpsLimit)
-	{
-		char fps[256];
-		float ifps = 1.f / (sdkGetAverageTimerValue(&hTimer) / 1000.f);
-		sprintf(fps, "<CUDA %s Set> %3.1f fps", "CUDA", ifps);
-		glutSetWindowTitle(fps);
-		fpsCount = 0;
-
-		fpsLimit = MAX(1.f, (float)ifps);
-		sdkResetTimer(&hTimer);
-	}
+	//	fpsLimit = MAX(1.f, (float)ifps);
+	//	sdkResetTimer(&hTimer);
+	//}
 }
 
 void renderImage()
@@ -58,7 +65,8 @@ void renderImage()
 	checkCudaErrors(cudaGraphicsMapResources(1, &cuda_pbo_resource, 0));
 	size_t num_bytes;
 	checkCudaErrors(cudaGraphicsResourceGetMappedPointer((void **)&d_imageBitmap, &num_bytes, cuda_pbo_resource));
-	RunCUDA(d_imageBitmap, imageW, imageH);
+	RunCUDA(d_imageBitmap,d_logo, logoW,logoH,imageW, imageH);
+
 	checkCudaErrors(cudaGraphicsUnmapResources(1, &cuda_pbo_resource, 0));
 }
 
@@ -123,6 +131,15 @@ void keyboardFunc(unsigned char k, int, int)
 		break;
 	}
 
+}
+
+void createTextureImage()
+{
+	int texWidth, texHeight, texChannels;
+	pixels = stbi_load("logo.jpg", &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
+	size_t logoSize = texWidth * texHeight * sizeof(uchar4);
+	checkCudaErrors(cudaMalloc((void **)&d_logo, logoSize));
+	checkCudaErrors(cudaMemcpy(d_logo, pixels, logoSize, cudaMemcpyHostToDevice));
 }
 
 void clickFunc(int button, int state, int x, int y)
@@ -261,7 +278,7 @@ void initGL(int *argc, char **argv)
 int main(int argc, char **argv)
 {
 	findCudaDevice(argc, (const char **)argv);
-
+	createTextureImage();
 	initGL(&argc, argv);
 
 	sdkCreateTimer(&hTimer);
@@ -273,3 +290,4 @@ int main(int argc, char **argv)
 	int k = 7;
 	glutMainLoop();
 }
+
