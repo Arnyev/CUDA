@@ -16,20 +16,20 @@ void __syncthreads();
 #include "thrust/iterator/zip_iterator.h"
 #include "thrust/sort.h"
 
-#define BOUND 100.0f
+#define BOUND 20.0f
 #define BOUNDINT (int)BOUND
 #define RADIUS 1
 #define COLLISIONDIST (float)(2*RADIUS+1)
-#define COLLISIONDISTINT (2*RADIUS+1)
+#define COLLISIONDISTINT (2*RADIUS+2)
 #define SPRINGFORCE 0.5f
 #define GRAVITY -0.000005f
 #define DAMPING 0.002f
 #define BOUNDARYFORCE 0.5f
 #define SHEARFORCE 0.01f
-#define CELLSIZE 16
-#define LOGGRIDSIZE 7
-#define CELLCOUNTX 128
-#define CELLCOUNTY 64
+#define CELLSIZE 8
+#define LOGGRIDSIZE 8
+#define CELLCOUNTX 256
+#define CELLCOUNTY 128
 #define CELLCOUNT (CELLCOUNTX * CELLCOUNTY )
 
 float2* d_speeds1 = 0;

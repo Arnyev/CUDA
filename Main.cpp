@@ -23,7 +23,7 @@ StopWatchInterface *hTimer = NULL;
 int fpsCount = 0;
 int fpsLimit = 15;
 unsigned int frameCount = 0;
-int imageW = 1800, imageH = 1000;
+int imageW = 1800, imageH = 1060;
 int logoW = 240, logoH = 234; 
 
 void RunCUDA(uchar4 *d_destinationBitmap, uchar4 *d_logo, int logoWidth, int logoHeight, int imageWidth, int imageHeight);
