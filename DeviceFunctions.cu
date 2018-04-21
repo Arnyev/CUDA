@@ -16,17 +16,17 @@ void __syncthreads();
 #include "thrust/iterator/zip_iterator.h"
 #include "thrust/sort.h"
 
-#define BOUND 20.0f
+#define BOUND 40.0f
 #define BOUNDINT (int)BOUND
-#define RADIUS 1
+#define RADIUS 3
 #define COLLISIONDIST (float)(2*RADIUS+1)
-#define COLLISIONDISTINT (2*RADIUS+2)
+#define STARTINGDIST (2*RADIUS+2)
 #define SPRINGFORCE 0.5f
-#define GRAVITY -0.000005f
-#define DAMPING 0.002f
+#define GRAVITY -0.025f
+#define DAMPING 0.01f
 #define BOUNDARYFORCE 0.5f
-#define SHEARFORCE 0.01f
-#define CELLSIZE 8
+#define SHEARFORCE 0.05f
+#define CELLSIZE 32
 #define LOGGRIDSIZE 8
 #define CELLCOUNTX 256
 #define CELLCOUNTY 128
@@ -46,7 +46,7 @@ uint* d_cellEnds = 0;
 int lastHeight = 0;
 int lastWidth = 0;
 
-__device__ void PutCircle(int middleIndex, int imageWidth, uchar4* pixels, int threadNum, uchar4*logo);
+__device__ void PutCircle(int middleIndex, int imageWidth, uchar3* pixels, int threadNum, uchar4*logo);
 __device__ float2 ProcessCollisions(int threadNum, float2* oldPositions, float2* oldSpeeds, uint *cellStarts, uint *cellEnds);
 
 __global__ void ProcessForces(float2* oldPositions, float2* oldSpeeds, float2* newSpeeds, int particleCount, uint * gridParticleIndices, uint *cellStarts, uint *cellEnds)
@@ -64,7 +64,7 @@ __global__ void ProcessForces(float2* oldPositions, float2* oldSpeeds, float2* n
 	newSpeeds[originalIndex] = newSpeed;
 }
 
-__global__ void CUDADrawPixels(uchar4 *pixels, int imageWidth, int imageHeight,float2* positions, float2* speeds, uchar4*logo, int particleCount)
+__global__ void CUDADrawPixels(uchar3 *pixels, int imageWidth, int imageHeight,float2* positions, float2* speeds, uchar4*logo, int particleCount)
 {
 	int threadNum = threadIdx.x + blockDim.x*blockIdx.x;
 	if (threadNum >= particleCount)
@@ -196,9 +196,13 @@ __global__ void CalcHashesD(int particleCount, float2* positions, uint* hashes, 
 	indices[index] = index;
 }
 
-__device__ void PutCircle(int middleIndex, int imageWidth, uchar4* pixels, int threadNum, uchar4*logo)
+__device__ void PutCircle(int middleIndex, int imageWidth, uchar3* pixels, int threadNum, uchar4*logo)
 {
-	uchar4 color = logo[threadNum];
+	uchar4 tempColor= logo[threadNum];
+	uchar3 color;
+	color.x = tempColor.x;
+	color.y = tempColor.y;
+	color.z = tempColor.z;
 
 	if (RADIUS >= 3)
 	{
@@ -360,7 +364,7 @@ void ReorderDataAndFindCellStart(
 	getLastCudaError("Kernel execution failed: reorderDataAndFindCellStartD");
 }
 
-void InitializeParticles(size_t arraySize, int logoWidth, int logoHeight)
+void InitializeParticles(size_t arraySize, int logoWidth, int logoHeight, int imageWidth)
 {
 	float2* positions = (float2*)malloc(arraySize);
 	float2* speeds = (float2*)malloc(arraySize);
@@ -388,13 +392,14 @@ void InitializeParticles(size_t arraySize, int logoWidth, int logoHeight)
 
 	srand(0);
 
+	int startX = (imageWidth - 2 * BOUND - STARTINGDIST * logoWidth) / 2;
 	for (int i = 0; i < logoHeight; i++)
 	{
 		for (int j = 0; j < logoWidth; j++)
 		{
 			int index = i * logoWidth + j;
-			positions[index].x = BOUND + COLLISIONDISTINT * j;
-			positions[index].y = BOUND + COLLISIONDISTINT * i;
+			positions[index].x = startX + STARTINGDIST * j;
+			positions[index].y = BOUND + STARTINGDIST * i;
 			speeds[index].x = 0;
 			speeds[index].y = 0;
 			speeds[index].x = (float)rand() / 20000000;
@@ -408,7 +413,7 @@ void InitializeParticles(size_t arraySize, int logoWidth, int logoHeight)
 	free(positions);
 }
 
-void RunCUDA(uchar4 *d_destinationBitmap, uchar4 *d_logo, int logoWidth, int logoHeight, int imageWidth, int imageHeight)
+void RunCUDA(uchar3 *d_destinationBitmap, uchar4 *d_logo, int logoWidth, int logoHeight, int imageWidth, int imageHeight)
 {
 	static size_t arraySize = 0;
 	int particleCount = logoHeight * logoWidth;
@@ -416,7 +421,7 @@ void RunCUDA(uchar4 *d_destinationBitmap, uchar4 *d_logo, int logoWidth, int log
 	if (arraySize != particleCount * sizeof(float2))
 	{
 		arraySize = particleCount * sizeof(float2);
-		InitializeParticles(arraySize, logoWidth, logoHeight);
+		InitializeParticles(arraySize, logoWidth, logoHeight, imageWidth);
 	}
 
 	if (!d_cellStarts)
@@ -425,7 +430,7 @@ void RunCUDA(uchar4 *d_destinationBitmap, uchar4 *d_logo, int logoWidth, int log
 		checkCudaErrors(cudaMalloc((void **)&d_cellStarts, sizeof(uint)*CELLCOUNT));
 	}
 
-	checkCudaErrors(cudaMemset(d_destinationBitmap, 0, sizeof(uchar4)* imageWidth* imageHeight));
+	checkCudaErrors(cudaMemset(d_destinationBitmap, 0, sizeof(uchar3)* imageWidth* imageHeight));
 
 	uint numThreads, numBlocks;
 	computeGridSize(particleCount, 256, numBlocks, numThreads);
