@@ -5,32 +5,12 @@ void __syncthreads();
 #include <cuda_runtime.h>
 #include "helper_cuda.h"
 #include "device_launch_parameters.h"
-#include "device_functions.h"
 #include <stdio.h>
-#include <math.h>
-#include <cooperative_groups.h>
 #include "helper_math.h"
-#include "math_constants.h"
-#include "thrust/device_ptr.h"
-#include "thrust/for_each.h"
-#include "thrust/iterator/zip_iterator.h"
 #include "thrust/sort.h"
-
-#define BOUND 40.0f
-#define BOUNDINT (int)BOUND
-#define RADIUS 3
-#define COLLISIONDIST (float)(2*RADIUS+1)
-#define STARTINGDIST (2*RADIUS+2)
-#define SPRINGFORCE 0.5f
-#define GRAVITY -0.025f
-#define DAMPING 0.01f
-#define BOUNDARYFORCE 0.5f
-#define SHEARFORCE 0.05f
-#define CELLSIZE 32
-#define LOGGRIDSIZE 8
-#define CELLCOUNTX 256
-#define CELLCOUNTY 128
-#define CELLCOUNT (CELLCOUNTX * CELLCOUNTY )
+#include <thrust/execution_policy.h>
+#include <sys\timeb.h> 
+#include <parameters.h> 
 
 float2* d_speeds1 = 0;
 float2* d_positions1 = 0;
@@ -46,13 +26,13 @@ uint* d_cellEnds = 0;
 int lastHeight = 0;
 int lastWidth = 0;
 
-__device__ void PutCircle(int middleIndex, int imageWidth, uchar3* pixels, int threadNum, uchar4*logo);
+__device__ void PutCircle(int middleIndex, uchar3* pixels, int threadNum, uchar4*logo);
 __device__ float2 ProcessCollisions(int threadNum, float2* oldPositions, float2* oldSpeeds, uint *cellStarts, uint *cellEnds);
 
-__global__ void ProcessForces(float2* oldPositions, float2* oldSpeeds, float2* newSpeeds, int particleCount, uint * gridParticleIndices, uint *cellStarts, uint *cellEnds)
+__global__ void ProcessForces(float2* oldPositions, float2* oldSpeeds, float2* newSpeeds, uint * gridParticleIndices, uint *cellStarts, uint *cellEnds)
 {
 	int threadNum = threadIdx.x + blockDim.x*blockIdx.x;
-	if (threadNum >= particleCount)
+	if (threadNum >= PARTICLECOUNT)
 		return;
 
 	float2 force = ProcessCollisions(threadNum, oldPositions, oldSpeeds, cellStarts, cellEnds);
@@ -64,18 +44,18 @@ __global__ void ProcessForces(float2* oldPositions, float2* oldSpeeds, float2* n
 	newSpeeds[originalIndex] = newSpeed;
 }
 
-__global__ void CUDADrawPixels(uchar3 *pixels, int imageWidth, int imageHeight,float2* positions, float2* speeds, uchar4*logo, int particleCount)
+__global__ void CUDADrawPixels(uchar3 *pixels, float2* positions, float2* speeds, uchar4*logo, bool putCircle)
 {
 	int threadNum = threadIdx.x + blockDim.x*blockIdx.x;
-	if (threadNum >= particleCount)
+	if (threadNum >= PARTICLECOUNT)
 		return;
 
 	float2 position = positions[threadNum];
 	float2 speed = speeds[threadNum];
 
-	if (position.x > imageWidth - BOUND)
+	if (position.x > IMAGEWFULL - BOUND)
 	{
-		speed.x += -1 * BOUNDARYFORCE*(position.x - imageWidth + BOUND);
+		speed.x += -1 * BOUNDARYFORCE*(position.x - IMAGEWFULL + BOUND);
 	}
 
 	if (position.x < BOUND)
@@ -83,9 +63,9 @@ __global__ void CUDADrawPixels(uchar3 *pixels, int imageWidth, int imageHeight,f
 		speed.x += BOUNDARYFORCE * (BOUND - position.x);
 	}
 
-	if (position.y > imageHeight - BOUND)
+	if (position.y >  IMAGEHFULL - BOUND)
 	{
-		speed.y += -1 * BOUNDARYFORCE*(position.y - imageHeight + BOUND);
+		speed.y += -1 * BOUNDARYFORCE*(position.y - IMAGEHFULL + BOUND);
 	}
 
 	if (position.y < BOUND)
@@ -96,8 +76,9 @@ __global__ void CUDADrawPixels(uchar3 *pixels, int imageWidth, int imageHeight,f
 	positions[threadNum] = position + speed;
 	speeds[threadNum] = speed;
 
-	int middleIndex = (int)position.x + imageWidth * (int)position.y;
-	PutCircle(middleIndex, imageWidth, pixels, threadNum, logo);
+	int middleIndex = (int)position.x + IMAGEWFULL * (int)position.y;
+	if (putCircle)
+		PutCircle(middleIndex, pixels, threadNum, logo);
 }
 
 __device__ uint GetHashFromPosition(float2 p)
@@ -105,7 +86,7 @@ __device__ uint GetHashFromPosition(float2 p)
 	return (((uint)floor(p.y / CELLSIZE)) << LOGGRIDSIZE) | ((uint)floor(p.x / CELLSIZE));
 }
 
-__device__ float2 ProcessCollisions( int threadNum, float2* oldPositions, float2* oldSpeeds, uint *cellStarts, uint *cellEnds)
+__device__ float2 ProcessCollisions(int threadNum, float2* oldPositions, float2* oldSpeeds, uint *cellStarts, uint *cellEnds)
 {
 	float2 force = { 0.0f,0.0f };
 
@@ -152,9 +133,9 @@ __device__ float2 ProcessCollisions( int threadNum, float2* oldPositions, float2
 
 					// spring force
 					force -= SPRINGFORCE * (COLLISIONDIST - dist) * norm;
-					force += DAMPING*relVel;
+					force += DAMPING * relVel;
 					// tangential shear force
-					force += SHEARFORCE*tanVel;
+					force += SHEARFORCE * tanVel;
 					// attraction
 				}
 			}
@@ -163,42 +144,30 @@ __device__ float2 ProcessCollisions( int threadNum, float2* oldPositions, float2
 	return force;
 }
 
-__device__ int2 calcGridPos(float2 p)
+__global__ void CalcHashesD(float2* positions, uint* hashes, uint* indices)
 {
-	int2 gridPos;
-	gridPos.x = floor(p.x / CELLSIZE);
-	gridPos.y = floor(p.y / CELLSIZE);
-	return gridPos;
-}
+	uint index = blockIdx.x* blockDim.x + threadIdx.x;
 
-// calculate address in grid from position (clamping to edges)
-__device__ uint calcGridHash(int2 gridPos)
-{
-	gridPos.x = gridPos.x & (CELLCOUNTX - 1);  // wrap grid, assumes size is power of 2
-	gridPos.y = gridPos.y & (CELLCOUNTY - 1);
-	return __umul24(gridPos.y, CELLCOUNTX) + gridPos.x;
-}
+	if (index >= PARTICLECOUNT) return;
 
-__global__ void CalcHashesD(int particleCount, float2* positions, uint* hashes, uint* indices )
-{
-	uint index = __umul24(blockIdx.x, blockDim.x) + threadIdx.x;
-
-	if (index >= particleCount) return;
-
-	volatile float2 p = positions[index];
+	float2 p = positions[index];
 
 	// get address in grid
-	int2 gridPos = calcGridPos(make_float2(p.x, p.y));
-	uint hash = calcGridHash(gridPos);
+	uint gridPosx = floor(p.x / CELLSIZE);
+	uint gridPosy = floor(p.y / CELLSIZE);
+	uint hash = (gridPosy << LOGGRIDSIZE) | gridPosx;
 
 	// store grid hash and particle index
 	hashes[index] = hash;
 	indices[index] = index;
 }
 
-__device__ void PutCircle(int middleIndex, int imageWidth, uchar3* pixels, int threadNum, uchar4*logo)
+__device__ void PutCircle(int middleIndex, uchar3* pixels, int threadNum, uchar4*logo)
 {
-	uchar4 tempColor= logo[threadNum];
+	int logoX = (threadNum % (DPPX * LOGOW)) / DPPX;
+	int logoY = (threadNum / (LOGOW*DPPX)) / DPPX;
+	int logoIndex = logoY * LOGOW + logoX;
+	uchar4 tempColor = logo[logoIndex];
 	uchar3 color;
 	color.x = tempColor.x;
 	color.y = tempColor.y;
@@ -206,36 +175,36 @@ __device__ void PutCircle(int middleIndex, int imageWidth, uchar3* pixels, int t
 
 	if (RADIUS >= 3)
 	{
-		pixels[middleIndex - (imageWidth * 3) - 1] = color;
-		pixels[middleIndex - (imageWidth * 3)] = color;
-		pixels[middleIndex - (imageWidth * 3) + 1] = color;
-		pixels[middleIndex - (imageWidth * 2) - 2] = color;
+		pixels[middleIndex - (IMAGEWFULL * 3) - 1] = color;
+		pixels[middleIndex - (IMAGEWFULL * 3)] = color;
+		pixels[middleIndex - (IMAGEWFULL * 3) + 1] = color;
+		pixels[middleIndex - (IMAGEWFULL * 2) - 2] = color;
 	}
 	if (RADIUS >= 2)
 	{
-		pixels[middleIndex - (imageWidth * 2) - 1] = color;
-		pixels[middleIndex - (imageWidth * 2)] = color;
-		pixels[middleIndex - (imageWidth * 2) + 1] = color;
+		pixels[middleIndex - (IMAGEWFULL * 2) - 1] = color;
+		pixels[middleIndex - (IMAGEWFULL * 2)] = color;
+		pixels[middleIndex - (IMAGEWFULL * 2) + 1] = color;
 	}
 	if (RADIUS >= 3)
 	{
-		pixels[middleIndex - (imageWidth * 2) + 2] = color;
-		pixels[middleIndex - imageWidth - 3] = color;
+		pixels[middleIndex - (IMAGEWFULL * 2) + 2] = color;
+		pixels[middleIndex - IMAGEWFULL - 3] = color;
 	}
 	if (RADIUS >= 2)
 	{
-		pixels[middleIndex - imageWidth - 2] = color;
-		pixels[middleIndex - imageWidth - 1] = color;
+		pixels[middleIndex - IMAGEWFULL - 2] = color;
+		pixels[middleIndex - IMAGEWFULL - 1] = color;
 	}
-	pixels[middleIndex - imageWidth] = color;
+	pixels[middleIndex - IMAGEWFULL] = color;
 	if (RADIUS >= 2)
 	{
-		pixels[middleIndex - imageWidth + 1] = color;
-		pixels[middleIndex - imageWidth + 2] = color;
+		pixels[middleIndex - IMAGEWFULL + 1] = color;
+		pixels[middleIndex - IMAGEWFULL + 2] = color;
 	}
 	if (RADIUS >= 3)
 	{
-		pixels[middleIndex - imageWidth + 3] = color;
+		pixels[middleIndex - IMAGEWFULL + 3] = color;
 		pixels[middleIndex - 3] = color;
 	}
 	if (RADIUS >= 2)
@@ -252,37 +221,55 @@ __device__ void PutCircle(int middleIndex, int imageWidth, uchar3* pixels, int t
 	if (RADIUS >= 3)
 	{
 		pixels[middleIndex + 3] = color;
-		pixels[middleIndex + imageWidth - 3] = color;
+		pixels[middleIndex + IMAGEWFULL - 3] = color;
 	}
 	if (RADIUS >= 2)
 	{
-		pixels[middleIndex + imageWidth - 2] = color;
-		pixels[middleIndex + imageWidth - 1] = color;
+		pixels[middleIndex + IMAGEWFULL - 2] = color;
+		pixels[middleIndex + IMAGEWFULL - 1] = color;
 	}
-	pixels[middleIndex + imageWidth] = color;
+	pixels[middleIndex + IMAGEWFULL] = color;
 	if (RADIUS >= 2)
 	{
-		pixels[middleIndex + imageWidth + 1] = color;
-		pixels[middleIndex + imageWidth + 2] = color;
+		pixels[middleIndex + IMAGEWFULL + 1] = color;
+		pixels[middleIndex + IMAGEWFULL + 2] = color;
 	}
 	if (RADIUS >= 3)
 	{
-		pixels[middleIndex + imageWidth + 3] = color;
-		pixels[middleIndex + (imageWidth * 2) - 2] = color;
+		pixels[middleIndex + IMAGEWFULL + 3] = color;
+		pixels[middleIndex + (IMAGEWFULL * 2) - 2] = color;
 	}
 	if (RADIUS >= 2)
 	{
-		pixels[middleIndex + (imageWidth * 2) - 1] = color;
-		pixels[middleIndex + (imageWidth * 2)] = color;
-		pixels[middleIndex + (imageWidth * 2) + 1] = color;
+		pixels[middleIndex + (IMAGEWFULL * 2) - 1] = color;
+		pixels[middleIndex + (IMAGEWFULL * 2)] = color;
+		pixels[middleIndex + (IMAGEWFULL * 2) + 1] = color;
 	}
 	if (RADIUS >= 3)
 	{
-		pixels[middleIndex + (imageWidth * 2) + 2] = color;
-		pixels[middleIndex + (imageWidth * 3) - 1] = color;
-		pixels[middleIndex + (imageWidth * 3)] = color;
-		pixels[middleIndex + (imageWidth * 3) + 1] = color;
+		pixels[middleIndex + (IMAGEWFULL * 2) + 2] = color;
+		pixels[middleIndex + (IMAGEWFULL * 3) - 1] = color;
+		pixels[middleIndex + (IMAGEWFULL * 3)] = color;
+		pixels[middleIndex + (IMAGEWFULL * 3) + 1] = color;
 	}
+
+	//int r2 = RADIUS * RADIUS + 1;
+
+	//int x = middleIndex % imageWidth;
+	//int y = middleIndex / imageWidth;
+	//for (int i = x - RADIUS; i <= x + RADIUS; i++)
+	//{
+	//	int dx2 = (i - x)*(i - x);
+	//	for (int j = y - RADIUS; j <= y + RADIUS; j++)
+	//	{
+	//		int dy2 = (j - y)*(j - y);
+	//		if (dx2 + dy2 <= r2)
+	//		{
+	//			int index = j * imageWidth + i;
+	//			pixels[index] = color;
+	//		}
+	//	}
+	//}
 }
 
 void computeGridSize(uint n, uint blockSize, uint &numBlocks, uint &numThreads)
@@ -293,18 +280,16 @@ void computeGridSize(uint n, uint blockSize, uint &numBlocks, uint &numThreads)
 
 void sortParticles(uint *dGridParticleHash, uint *dGridParticleIndex, uint numParticles)
 {
-	thrust::sort_by_key(thrust::device_ptr<uint>(dGridParticleHash),
-		thrust::device_ptr<uint>(dGridParticleHash + numParticles),
-		thrust::device_ptr<uint>(dGridParticleIndex));
+	thrust::sort_by_key(thrust::device, dGridParticleHash, dGridParticleHash + numParticles, dGridParticleIndex);
 }
 
-void CalcHashes(int particleCount, float2* positions, uint* hashes, uint* indices)
+void CalcHashes(float2* positions, uint* hashes, uint* indices)
 {
 	uint numThreads, numBlocks;
-	computeGridSize(particleCount, 1024, numBlocks, numThreads);
+	computeGridSize(PARTICLECOUNT, 1024, numBlocks, numThreads);
 
 	// execute the kernel
-	CalcHashesD << < numBlocks, numThreads >> > (particleCount, positions, hashes, indices);
+	CalcHashesD << < numBlocks, numThreads >> > (positions, hashes, indices);
 
 	// check if kernel invocation generated an error
 	getLastCudaError("Kernel execution failed");
@@ -364,8 +349,9 @@ void ReorderDataAndFindCellStart(
 	getLastCudaError("Kernel execution failed: reorderDataAndFindCellStartD");
 }
 
-void InitializeParticles(size_t arraySize, int logoWidth, int logoHeight, int imageWidth)
+void InitializeParticles()
 {
+	size_t arraySize = PARTICLECOUNT * sizeof(float2);
 	float2* positions = (float2*)malloc(arraySize);
 	float2* speeds = (float2*)malloc(arraySize);
 	memset(positions, 0, arraySize);
@@ -381,7 +367,7 @@ void InitializeParticles(size_t arraySize, int logoWidth, int logoHeight, int im
 		cudaFree(d_indices);
 	}
 
-	size_t indicesSize = sizeof(uint)*arraySize / (sizeof(float2)) * 8;
+	size_t indicesSize = sizeof(uint)* PARTICLECOUNT;
 
 	checkCudaErrors(cudaMalloc((void **)&d_positions1, arraySize));
 	checkCudaErrors(cudaMalloc((void **)&d_speeds1, arraySize));
@@ -392,17 +378,17 @@ void InitializeParticles(size_t arraySize, int logoWidth, int logoHeight, int im
 
 	srand(0);
 
-	int startX = (imageWidth - 2 * BOUND - STARTINGDIST * logoWidth) / 2;
-	for (int i = 0; i < logoHeight; i++)
+	int startX = (IMAGEWFULL - 2 * BOUND - STARTINGDIST * PARTICLECOUNTX) / 2;
+	for (int i = 0; i < PARTICLECOUNTY; i++)
 	{
-		for (int j = 0; j < logoWidth; j++)
+		for (int j = 0; j < PARTICLECOUNTX; j++)
 		{
-			int index = i * logoWidth + j;
+			int index = i * PARTICLECOUNTX + j;
 			positions[index].x = startX + STARTINGDIST * j;
 			positions[index].y = BOUND + STARTINGDIST * i;
 			speeds[index].x = 0;
 			speeds[index].y = 0;
-			speeds[index].x = (float)rand() / 20000000;
+			speeds[index].x = (float)rand() / SPEEDFACTOR;
 		}
 	}
 	checkCudaErrors(cudaMemcpy(d_positions1, positions, arraySize, cudaMemcpyHostToDevice));
@@ -413,15 +399,20 @@ void InitializeParticles(size_t arraySize, int logoWidth, int logoHeight, int im
 	free(positions);
 }
 
-void RunCUDA(uchar3 *d_destinationBitmap, uchar4 *d_logo, int logoWidth, int logoHeight, int imageWidth, int imageHeight)
+void RunCUDA(uchar3 *d_destinationBitmap, uchar4 *d_logo, bool putCircle)
 {
-	static size_t arraySize = 0;
-	int particleCount = logoHeight * logoWidth;
+	static bool initialized = false;
+	cudaEvent_t start, stop;
+	float milliseconds = 0;
 
-	if (arraySize != particleCount * sizeof(float2))
+	uint numThreads, numBlocks;
+	cudaEventCreate(&start);
+	cudaEventCreate(&stop);
+
+	if (!initialized)
 	{
-		arraySize = particleCount * sizeof(float2);
-		InitializeParticles(arraySize, logoWidth, logoHeight, imageWidth);
+		initialized = true;
+		InitializeParticles();
 	}
 
 	if (!d_cellStarts)
@@ -430,22 +421,105 @@ void RunCUDA(uchar3 *d_destinationBitmap, uchar4 *d_logo, int logoWidth, int log
 		checkCudaErrors(cudaMalloc((void **)&d_cellStarts, sizeof(uint)*CELLCOUNT));
 	}
 
-	checkCudaErrors(cudaMemset(d_destinationBitmap, 0, sizeof(uchar3)* imageWidth* imageHeight));
+	computeGridSize(PARTICLECOUNT, 256, numBlocks, numThreads);
 
-	uint numThreads, numBlocks;
-	computeGridSize(particleCount, 256, numBlocks, numThreads);
+	cudaEventRecord(start);
+	CalcHashes(d_positions1, d_hashes, d_indices);
+	cudaEventRecord(stop);
+	cudaEventSynchronize(stop);
+	cudaEventElapsedTime(&milliseconds, start, stop);
+	printf("hashes took %f\n", milliseconds);
 
-	CalcHashes(particleCount, d_positions1, d_hashes, d_indices);
 
-	sortParticles(d_hashes, d_indices, particleCount);
+	cudaEventRecord(start);
+	sortParticles(d_hashes, d_indices, PARTICLECOUNT);
+	cudaEventRecord(stop);
+	cudaEventSynchronize(stop);
+	cudaEventElapsedTime(&milliseconds, start, stop);
+	printf("sorting took %f\n", milliseconds);
 
-	ReorderDataAndFindCellStart(d_cellStarts, d_cellEnds, d_positions2, d_speeds2, d_hashes, d_indices, d_positions1, d_speeds1, particleCount, CELLCOUNT);
 
-	ProcessForces << <numBlocks, numThreads >> > (d_positions2, d_speeds2, d_speeds1, particleCount, d_indices, d_cellStarts, d_cellEnds);
+	cudaEventRecord(start);
+	ReorderDataAndFindCellStart(d_cellStarts, d_cellEnds, d_positions2, d_speeds2, d_hashes, d_indices, d_positions1, d_speeds1, PARTICLECOUNT, CELLCOUNT);
+	cudaEventRecord(stop);
+	cudaEventSynchronize(stop);
+	cudaEventElapsedTime(&milliseconds, start, stop);
+	printf("reordering took %f\n", milliseconds);
 
+	cudaEventRecord(start);
+	ProcessForces << <numBlocks, numThreads >> > (d_positions2, d_speeds2, d_speeds1, d_indices, d_cellStarts, d_cellEnds);
+	cudaEventRecord(stop);
+	cudaEventSynchronize(stop);
+	cudaEventElapsedTime(&milliseconds, start, stop);
+	printf("forces took %f\n", milliseconds);
 	getLastCudaError("CUDADrawPixels kernel execution failed.\n");
 
-	CUDADrawPixels << <numBlocks, numThreads >> > (d_destinationBitmap, imageWidth, imageHeight, d_positions1, d_speeds1, d_logo, particleCount);
 
+	if (putCircle)
+	{
+		cudaEventRecord(start);
+		checkCudaErrors(cudaMemset(d_destinationBitmap, 0, sizeof(uchar3)* IMAGEWFULL* IMAGEHFULL));
+		cudaEventRecord(stop);
+		cudaEventSynchronize(stop);
+		cudaEventElapsedTime(&milliseconds, start, stop);
+		printf("memset took %f\n", milliseconds);
+	}
+	cudaEventRecord(start);
+	CUDADrawPixels << <numBlocks, numThreads >> > (d_destinationBitmap, d_positions1, d_speeds1, d_logo, putCircle);
+	cudaEventRecord(stop);
+	cudaEventSynchronize(stop);
+	cudaEventElapsedTime(&milliseconds, start, stop);
+	printf("drawing took %f\n", milliseconds);
+
+	getLastCudaError("CUDADrawPixels kernel execution failed.\n");
+}
+
+__global__ void DownsampleImageD(uchar3 *d_imageStart, uchar3 *d_imageResult)
+{
+	int index = blockIdx.x* blockDim.x + threadIdx.x;
+	if (index >= IMAGEW * IMAGEH)
+		return;
+
+	int myRow = index / IMAGEW;
+	int myColumn = index % IMAGEW;
+	int inputIndexStart = DOWNSAMPLING * (IMAGEWFULL * myRow + myColumn);
+
+	ushort3 colorTMP = { 0,0,0 };
+	uchar3 color;
+
+	for (int j = 0; j < DOWNSAMPLING; j++)
+	{
+		for (int k = 0; k < DOWNSAMPLING; k++)
+		{
+			int indexP = inputIndexStart + j * IMAGEWFULL + k;
+			colorTMP.x += d_imageStart[indexP].x;
+			colorTMP.y += d_imageStart[indexP].y;
+			colorTMP.z += d_imageStart[indexP].z;
+		}
+	}
+
+	color.x = (unsigned char)(colorTMP.x >> LOGDOWNSAMPLINGSQR);
+	color.y = (unsigned char)(colorTMP.y >> LOGDOWNSAMPLINGSQR);
+	color.z = (unsigned char)(colorTMP.z >> LOGDOWNSAMPLINGSQR);
+
+	d_imageResult[index] = color;
+}
+
+void DownsampleImage(uchar3 *d_imageStart, uchar3 *d_imageResult)
+{
+	uint numThreads, numBlocks;
+
+	computeGridSize(IMAGEW*IMAGEH, 1024, numBlocks, numThreads);
+
+	cudaEvent_t start, stop;
+	cudaEventCreate(&start);
+	cudaEventCreate(&stop);
+	cudaEventRecord(start);
+	DownsampleImageD << <numBlocks, numThreads >> > (d_imageStart, d_imageResult);
+	cudaEventRecord(stop);
+	cudaEventSynchronize(stop);
+	float milliseconds = 0;
+	cudaEventElapsedTime(&milliseconds, start, stop);
+	printf("downsampling took %f\n", milliseconds);
 	getLastCudaError("CUDADrawPixels kernel execution failed.\n");
 }
