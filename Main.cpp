@@ -4,7 +4,6 @@
 #include <stb_image_write.h>
 #include <cuda_runtime.h>
 #include <helper_cuda.h>
-#include <sys\timeb.h> 
 #include <parameters.h> 
 #include <mutex>
 #include <condition_variable>
@@ -19,9 +18,9 @@ uchar3 *d_imageBitmapDownsampled = NULL;
 uchar4 *d_logo = NULL;
 uchar4* pixels = NULL;
 
-void RunCUDA(uchar3 *d_destinationBitmap, uchar4 *d_logo, bool putCircle);
+void RunCUDA(uchar3 *d_destinationBitmap, uchar4 *d_logo, bool putCircle, float rightBound);
 void DownsampleImage(uchar3 *d_imageStart, uchar3 *d_imageResult);
-
+void InitializeParticles();
 
 class Semaphore
 {
@@ -30,27 +29,19 @@ public:
 	std::condition_variable condition;
 	unsigned long count = 0; // Initialized as locked.
 
-public:
-	void notify() {
+	void notify() 
+	{
 		std::unique_lock<decltype(mutex)> lock(mutex);
 		++count;
 		condition.notify_one();
 	}
 
-	void wait() {
+	void wait() 
+	{
 		std::unique_lock<decltype(mutex)> lock(mutex);
 		while (!count) // Handle spurious wake-ups.
 			condition.wait(lock);
 		--count;
-	}
-
-	bool try_wait() {
-		std::unique_lock<decltype(mutex)> lock(mutex);
-		if (count) {
-			--count;
-			return true;
-		}
-		return false;
 	}
 };
 
@@ -79,25 +70,49 @@ void SaveToFile(int number, int pngNumber)
 	renderSemaphore.notify();
 }
 
+void SaveAndFree(void * fullBitmap, int nr)
+{
+	char fileName[100];
+
+	sprintf(fileName, "bmpBig%d.png", nr);
+
+	stbi_write_png(fileName, IMAGEWFULL, IMAGEHFULL, 3, fullBitmap, IMAGEWFULL * 3);
+	free(fullBitmap);
+}
+
 void renderImage()
 {
 	static int pngNumber = 0;
 	static unsigned int timesRendered = 0;
 
 	timesRendered++;
-	bool putCircle = timesRendered % FRAMEDIFF == 0;
+	bool putCircle = timesRendered % FRAMEDIFF == 1;
 
-	RunCUDA(d_imageBitmap, d_logo, putCircle);
+	float phase = STARTINGPHASE + timesRendered / PHASEFRAMES;
+	float baseRight = IMAGEWFULL - BOUND - WAVEAMPLITUDE;
+	float rightBound = baseRight + WAVEAMPLITUDE * sin(phase);
+	RunCUDA(d_imageBitmap, d_logo, putCircle,rightBound);
 
-	if (timesRendered % FRAMEDIFF != 0)
+	if (timesRendered % (BIGFRAMEDIFF) == 1)
+	{
+		size_t size = 3 * IMAGEWFULL*IMAGEHFULL;
+		void* fullBitmap = malloc(size);
+		checkCudaErrors(cudaMemcpy(fullBitmap, d_imageBitmap, size, cudaMemcpyDeviceToHost));
+		//SaveAndFree(fullBitmap, timesRendered / FRAMEDIFF);
+
+		std::thread(SaveAndFree, fullBitmap,timesRendered/FRAMEDIFF).detach();
+	}
+
+	if (!putCircle)
 		return;
 
 	size_t resultImageSize = IMAGEH * IMAGEW * 3;
 
 	DownsampleImage(d_imageBitmap, d_imageBitmapDownsampled);
-
 	pngNumber++;
+
 	renderSemaphore.wait();
+
 	accessMutex.lock();
 	int i = 0;
 	for (; i < THREADCOUNT; i++)
@@ -110,8 +125,6 @@ void renderImage()
 
 	std::thread(SaveToFile, i,pngNumber).detach();
 }
-
-
 
 void createTextureImage()
 {
@@ -132,6 +145,21 @@ void createTextureImage()
 			pixels[indexL] = pixels[indexR];
 			pixels[indexR] = tmp;
 		}
+	}
+
+	if (!DRAWJPG) 
+	{
+		logoSize = PARTICLECOUNTX * PARTICLECOUNTY * sizeof(uchar4);
+		pixels = (uchar4*)malloc(logoSize);
+		//unsigned short * pixels2 = (unsigned short*)pixels;
+		srand(0);
+		for (int i = 0; i < PARTICLECOUNTX*PARTICLECOUNTY; i++)
+		{
+			pixels[i].x = rand();
+			pixels[i].y = rand();
+			pixels[i].z = rand();
+		}	
+		//memset(pixels, 0, logoSize);
 	}
 
 	checkCudaErrors(cudaMalloc((void **)&d_logo, logoSize));
@@ -157,6 +185,8 @@ int main(int argc, char **argv)
 
 	checkCudaErrors(cudaMalloc((void **)&d_imageBitmap, imageFullSize));
 	checkCudaErrors(cudaMalloc((void **)&d_imageBitmapDownsampled, resultImageSize));
+
+	InitializeParticles();
 
 	for (int i = 0; i < FRAMEDIFF*FRAMECOUNT; i++)
 		renderImage();

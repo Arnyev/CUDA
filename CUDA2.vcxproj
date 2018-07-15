@@ -90,6 +90,7 @@ copy "$(CudaToolkitBinDir)\cudart*.dll" "$(OutDir)"</Command>
   </ItemDefinitionGroup>
   <ItemGroup>
     <CudaCompile Include="DeviceFunctions.cu" />
+    <CudaCompile Include="sort.cu" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="parameters.h" />
