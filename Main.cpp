@@ -1,26 +1,45 @@
-#define STB_IMAGE_IMPLEMENTATION
-#include <stb_image.h>
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <stb_image_write.h>
-#include <cuda_runtime.h>
-#include <helper_cuda.h>
-#include <parameters.h> 
-#include <mutex>
-#include <condition_variable>
+#define STB_IMAGE_IMPLEMENTATION
+#include <stb_image.h>
+
+#include "parameters.h"
 #include <thread>
-#include <algorithm>
-#include <iterator>
-#include <vector>
+#include <mutex>
+#include <iomanip>
+#include <sstream>
 
-uchar3 *d_imageBitmap = NULL;
-uchar3 *d_imageBitmapDownsampled = NULL;
+template <typename F, typename ... Args>
+std::chrono::microseconds::rep measure::execution(F&& func, Args&&... args)
+{
+	const auto start = std::chrono::high_resolution_clock::now();
+	std::forward<decltype(func)>(func)(std::forward<Args>(args)...);
+	auto duration = std::chrono::duration_cast<std::chrono::microseconds>
+		(std::chrono::high_resolution_clock::now() - start);
+	return duration.count();
+}
 
-uchar4 *d_logo = NULL;
-uchar4* pixels = NULL;
+template <typename F, typename ... Args>
+float measure::execution_gpu(F&& func, Args&&... args)
+{
+	cudaEvent_t start;
+	cudaEvent_t stop;
+	float milliseconds = 0;
 
-void RunCUDA(uchar3 *d_destinationBitmap, uchar4 *d_logo, bool putCircle, float rightBound);
-void DownsampleImage(uchar3 *d_imageStart, uchar3 *d_imageResult);
-void InitializeParticles();
+	GPU_ERRCHK(cudaEventCreate(&start));
+	GPU_ERRCHK(cudaEventCreate(&stop));
+	GPU_ERRCHK(cudaEventRecord(start));
+
+	std::forward<decltype(func)>(func)(std::forward<Args>(args)...);
+
+	GPU_ERRCHK(cudaEventRecord(stop));
+	GPU_ERRCHK(cudaEventSynchronize(stop));
+	GPU_ERRCHK(cudaEventElapsedTime(&milliseconds, start, stop));
+	GPU_ERRCHK(cudaEventDestroy(start));
+	GPU_ERRCHK(cudaEventDestroy(stop));
+
+	return milliseconds * 1000;
+}
 
 class Semaphore
 {
@@ -29,14 +48,14 @@ public:
 	std::condition_variable condition;
 	unsigned long count = 0; // Initialized as locked.
 
-	void notify() 
+	void notify()
 	{
 		std::unique_lock<decltype(mutex)> lock(mutex);
 		++count;
 		condition.notify_one();
 	}
 
-	void wait() 
+	void wait()
 	{
 		std::unique_lock<decltype(mutex)> lock(mutex);
 		while (!count) // Handle spurious wake-ups.
@@ -45,150 +64,107 @@ public:
 	}
 };
 
-unsigned char *h_imageBitmaps[THREADCOUNT];
-
-bool bitmapsFree[THREADCOUNT];
-Semaphore renderSemaphore;
-std::mutex accessMutex;
-
-void SaveToFile(int number, int pngNumber)
+struct file_writing_data
 {
-	char fileName[100];
-	if (pngNumber < 10)
-		sprintf(fileName, "pngs/image-000%d.png", pngNumber);
-	else if (pngNumber < 100)
-		sprintf(fileName, "pngs/image-00%d.png", pngNumber);
-	else if (pngNumber < 1000)
-		sprintf(fileName, "pngs/image-0%d.png", pngNumber);
-	else
-		sprintf(fileName, "pngs/image-%d.png", pngNumber);
+	std::vector<thrust::host_vector<uchar3>> bitmaps;
+	std::vector<bool> bitmaps_free;
+	Semaphore render_semaphore;
+	std::mutex access_mutex;
 
-	stbi_write_png(fileName, IMAGEW, IMAGEH, 3, (const void *)h_imageBitmaps[number], IMAGEW * 3);
-	accessMutex.lock();
-	bitmapsFree[number] = true;
-	accessMutex.unlock();
-	renderSemaphore.notify();
-}
-
-void SaveAndFree(void * fullBitmap, int nr)
-{
-	char fileName[100];
-
-	sprintf(fileName, "bmpBig%d.png", nr);
-
-	stbi_write_png(fileName, IMAGEWFULL, IMAGEHFULL, 3, fullBitmap, IMAGEWFULL * 3);
-	free(fullBitmap);
-}
-
-void renderImage()
-{
-	static int pngNumber = 0;
-	static unsigned int timesRendered = 0;
-
-	timesRendered++;
-	bool putCircle = timesRendered % FRAMEDIFF == 1;
-
-	float phase = STARTINGPHASE + timesRendered / PHASEFRAMES;
-	float baseRight = IMAGEWFULL - BOUND - WAVEAMPLITUDE;
-	float rightBound = baseRight + WAVEAMPLITUDE * sin(phase);
-	RunCUDA(d_imageBitmap, d_logo, putCircle,rightBound);
-
-	if (timesRendered % (BIGFRAMEDIFF) == 1)
+	file_writing_data()
 	{
-		size_t size = 3 * IMAGEWFULL*IMAGEHFULL;
-		void* fullBitmap = malloc(size);
-		checkCudaErrors(cudaMemcpy(fullBitmap, d_imageBitmap, size, cudaMemcpyDeviceToHost));
-		//SaveAndFree(fullBitmap, timesRendered / FRAMEDIFF);
+		bitmaps.resize(THREADCOUNT);
+		for (auto& bitmap : bitmaps)
+			bitmap.resize(IMAGEH*IMAGEW);
 
-		std::thread(SaveAndFree, fullBitmap,timesRendered/FRAMEDIFF).detach();
+		bitmaps_free = std::vector<bool>(THREADCOUNT, true);
+		render_semaphore.count = THREADCOUNT;
 	}
+};
 
-	if (!putCircle)
-		return;
+void save_to_file(const int number, const int png_number, file_writing_data* data)
+{
+	std::ostringstream ss;
+	ss << "pngs/image-" << std::setw(5) << std::setfill('0') << png_number << ".png";
 
-	size_t resultImageSize = IMAGEH * IMAGEW * 3;
-
-	DownsampleImage(d_imageBitmap, d_imageBitmapDownsampled);
-	pngNumber++;
-
-	renderSemaphore.wait();
-
-	accessMutex.lock();
-	int i = 0;
-	for (; i < THREADCOUNT; i++)
-		if (bitmapsFree[i])
-			break;
-	bitmapsFree[i] = false;
-	accessMutex.unlock();
-
-	checkCudaErrors(cudaMemcpy(h_imageBitmaps[i], d_imageBitmapDownsampled, resultImageSize, cudaMemcpyDeviceToHost));
-
-	std::thread(SaveToFile, i,pngNumber).detach();
+	stbi_write_png(ss.str().data(), IMAGEW, IMAGEH, 3, static_cast<const void *>(data->bitmaps[number].data()), IMAGEW * 3);
+	data->access_mutex.lock();
+	data->bitmaps_free[number] = true;
+	data->access_mutex.unlock();
+	data->render_semaphore.notify();
 }
 
-void createTextureImage()
+void save(file_writing_data& files, int png_number, const thrust::device_vector<uchar3> & image)
 {
-	size_t logoSize = LOGOH * LOGOW * sizeof(uchar4);
-	uchar4 tmp;
+	files.render_semaphore.wait();
+	files.access_mutex.lock();
+	int bitmap_nr = 0;
+	for (; bitmap_nr < THREADCOUNT; bitmap_nr++)
+		if (files.bitmaps_free[bitmap_nr])
+			break;
+	files.bitmaps_free[bitmap_nr] = false;
+	files.access_mutex.unlock();
 
-	int texWidth, texHeight, texChannels;
-	pixels = (uchar4*)stbi_load("logo.jpg", &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
+	files.bitmaps[bitmap_nr] = image;
+	std::thread(save_to_file, bitmap_nr, png_number, &files).detach();
+}
 
-	for (int i = 0; i < texHeight / 2; i++)
+void run_sim(const thrust::host_vector<uchar3>& logo_host)
+{
+	particle_data particles(logo_host);
+	file_writing_data files;
+
+	for (int i = 0; i < FRAMEDIFF*FRAMECOUNT; i++)
 	{
-		for (int j = 0; j < texWidth; j++)
-		{
-			int indexL = i * texWidth + j;
-			int indexR = (LOGOH - i - 1)*texWidth + j;
+		std::cout << "Step took " << measure::execution_gpu(process_step, particles) << std::endl;
+		//process_step(particles);
+		if (i % FRAMEDIFF != 1)
+			continue;
 
-			tmp = pixels[indexL];
+		//std::cout << "Circles took " << measure::execution_gpu(put_circles, particles) << std::endl;
+		//std::cout << "Downsample took " << measure::execution_gpu(downsample_image, particles.image.data().get(), particles.image_downsampled.data().get()) << std::endl;
+		//const int png_number = i / FRAMEDIFF + 1;
+		//std::cout << "Saving took " << measure::execution(save, files, png_number, particles.image_downsampled) << std::endl;
+
+		put_circles(particles);
+		downsample_image(particles.image.data().get(), particles.image_downsampled.data().get());
+		const int png_number = i / FRAMEDIFF + 1;
+		save(files, png_number, particles.image_downsampled);
+	}
+}
+
+void load_texture(thrust::host_vector<uchar3>& texture, const char* filename)
+{
+	int tex_width, tex_height, tex_channels;
+	const auto pixels = reinterpret_cast<uchar4*>(stbi_load(filename, &tex_width, &tex_height, &tex_channels, STBI_rgb_alpha));
+
+	for (int i = 0; i < LOGOH / 2; i++)
+	{
+		for (int j = 0; j < LOGOW; j++)
+		{
+			const int indexL = i * tex_width + j;
+			const int indexR = (LOGOH - i - 1)*tex_width + j;
+
+			const uchar4 tmp = pixels[indexL];
 			pixels[indexL] = pixels[indexR];
 			pixels[indexR] = tmp;
 		}
 	}
 
-	if (!DRAWJPG) 
-	{
-		logoSize = PARTICLECOUNTX * PARTICLECOUNTY * sizeof(uchar4);
-		pixels = (uchar4*)malloc(logoSize);
-		//unsigned short * pixels2 = (unsigned short*)pixels;
-		srand(0);
-		for (int i = 0; i < PARTICLECOUNTX*PARTICLECOUNTY; i++)
-		{
-			pixels[i].x = rand();
-			pixels[i].y = rand();
-			pixels[i].z = rand();
-		}	
-		//memset(pixels, 0, logoSize);
-	}
+	texture.resize(LOGOH*LOGOW);
+	for (int i = 0; i < LOGOW*LOGOH; i++)
+		texture[i] = { pixels[i].x,pixels[i].y,pixels[i].z };
 
-	checkCudaErrors(cudaMalloc((void **)&d_logo, logoSize));
-	checkCudaErrors(cudaMemcpy(d_logo, pixels, logoSize, cudaMemcpyHostToDevice));
+	free(pixels);
 }
 
-int main(int argc, char **argv)
+int main(const int argc, char **argv)
 {
 	stbi_flip_vertically_on_write(1);
 	stbi_write_png_compression_level = 0;
-	findCudaDevice(argc, (const char **)argv);
-	createTextureImage();
-
-	for (int i = 0; i < THREADCOUNT; i++)
-	{
-		h_imageBitmaps[i] = (unsigned char *)malloc(IMAGEW * IMAGEH * 3);
-		bitmapsFree[i] = true;
-	}
-	renderSemaphore.count = THREADCOUNT;
-
-	size_t resultImageSize = IMAGEW * IMAGEH * 3;
-	size_t imageFullSize = IMAGEWFULL * IMAGEHFULL * 3;
-
-	checkCudaErrors(cudaMalloc((void **)&d_imageBitmap, imageFullSize));
-	checkCudaErrors(cudaMalloc((void **)&d_imageBitmapDownsampled, resultImageSize));
-
-	InitializeParticles();
-
-	for (int i = 0; i < FRAMEDIFF*FRAMECOUNT; i++)
-		renderImage();
+	if (cudaSetDevice(0))
+		return-1;
+	thrust::host_vector<uchar3> logo_host;
+	load_texture(logo_host, LOGOFILE);
+	run_sim(logo_host);
 }
-
