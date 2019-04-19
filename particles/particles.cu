@@ -58,7 +58,7 @@ __global__ void draw_speed_d(const float2* __restrict__ positions, uchar3* __res
     const auto speed = speeds[thread_id];
     uchar3 color = { 0,0,0 };
 
-    const float speedC = sqrtf(speed.x*speed.x + speed.y*speed.y) * color_speed_mult;
+    const float speedC = length(speed) * color_speed_mult;
 
     if (speedC < 256)
     {
@@ -98,7 +98,45 @@ __global__ void draw_speed_d(const float2* __restrict__ positions, uchar3* __res
     for (int i = -RADIUS; i <= RADIUS; i++)
 #pragma unroll
         for (int j = -RADIUS; j <= RADIUS; j++)
-            if (i * i + j * j <= DRAWDISTSQR)
+            if (i * i + j * j <= DRAWDISTSQRS)
+                image[(position_y + i)* IMAGEWFULL + position_x + j] = color;
+}
+
+__global__ void draw_direction_d(const float2* __restrict__ positions, uchar3* __restrict__ image, const float2* __restrict__ speeds)
+{
+    const auto thread_id = THREAD_ID();
+    if (thread_id >= PARTICLECOUNT)
+        return;
+
+    const auto position = positions[thread_id];
+    const u32 position_x = static_cast<u32>(position.x);
+    const u32 position_y = static_cast<u32>(position.y);
+
+    if (position_y < RADIUS || position_y >= IMAGEHFULL - RADIUS || position_x < RADIUS || position_x >= IMAGEWFULL - RADIUS)
+        return;
+
+    constexpr float2 v1 = { 0,1 };
+    constexpr float2 v2 = { -0.86602540378,-0.5f };
+    constexpr float2 v3 = { 0.86602540378,-0.5f };
+
+    const auto speed = speeds[thread_id];
+    const auto norm_speed = normalize(speed);
+    const float cos1 = acosf(dot(norm_speed, v1));
+    const float cos2 = acosf(dot(norm_speed, v2));
+    const float cos3 = acosf(dot(norm_speed, v3));
+
+    float mult = base_color_intensity + length(speed) * color_intensity_multiplier;
+    if (mult > 256.0f)
+        mult = 256.0f;
+
+    const float3 colorf = mult * normalize(float3{ cos1, cos2, cos3 });
+    const uchar3 color = { static_cast<u8>(colorf.x),static_cast<u8>(colorf.y),static_cast<u8>(colorf.z) };
+
+#pragma unroll
+    for (int i = -RADIUSD; i <= RADIUSD; i++)
+#pragma unroll
+        for (int j = -RADIUSD; j <= RADIUSD; j++)
+            if (i * i + j * j <= DRAWDISTSQRDIR)
                 image[(position_y + i)* IMAGEWFULL + position_x + j] = color;
 }
 
@@ -121,10 +159,9 @@ __global__ void draw_density_d(const float2* __restrict__ positions, uchar3* __r
     for (int i = -RADIUS; i <= RADIUS; i++)
 #pragma unroll
         for (int j = -RADIUS; j <= RADIUS; j++)
-            if (i * i + j * j <= DRAWDISTSQR)
+            if (i * i + j * j <= DRAWDISTSQRD)
                 image[(position_y + i)* IMAGEWFULL + position_x + j] = color;
 }
-
 
 __global__ void downsample_image_d(const uchar3* __restrict__ input, uchar3* __restrict__ output)
 {
@@ -299,6 +336,12 @@ void draw_speed(particle_data& data)
 {
     data.image.fill_with_zeroes();
     STARTKERNEL(draw_speed_d, PARTICLECOUNT, data.positions_stable.begin(), data.image.begin(), data.speeds_stable.begin());
+}
+
+void draw_direction(particle_data& data)
+{
+    data.image.fill_with_zeroes();
+    STARTKERNEL(draw_direction_d, PARTICLECOUNT, data.positions_stable.begin(), data.image.begin(), data.speeds_stable.begin());
 }
 
 void draw_density(particle_data& data)

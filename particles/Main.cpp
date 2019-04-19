@@ -82,15 +82,20 @@ void get_frame(particle_data& particles, const u32 frame_number, file_writing_da
 
     draw_speed(particles);
     downsample_image(particles.image.begin(), particles.image_downsampled.begin());
-
     std::ostringstream ss;
     ss << "pngs/image-" << std::setw(5) << std::setfill('0') << frame_number << ".png";
-
     save(files, ss.str(), particles.image_downsampled);
-    ss = std::ostringstream();
-    ss << "pngsd/image-" << std::setw(5) << std::setfill('0') << frame_number << ".png";
+
     draw_density(particles);
     downsample_image(particles.image.begin(), particles.image_downsampled.begin());
+    ss = std::ostringstream();
+    ss << "pngsd/image-" << std::setw(5) << std::setfill('0') << frame_number << ".png";
+    save(files, ss.str(), particles.image_downsampled);
+
+    draw_direction(particles);
+    downsample_image(particles.image.begin(), particles.image_downsampled.begin());
+    ss = std::ostringstream();
+    ss << "pngsdir/image-" << std::setw(5) << std::setfill('0') << frame_number << ".png";
     save(files, ss.str(), particles.image_downsampled);
 }
 

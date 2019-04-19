@@ -32,3 +32,4 @@ void downsample_image(const uchar3* input, uchar3* output);
 void process_step(particle_data& particles);
 void draw_speed(particle_data& data);
 void draw_density(particle_data& data);
+void draw_direction(particle_data& data);
