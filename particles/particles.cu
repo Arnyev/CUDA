@@ -16,7 +16,7 @@ __host__ __device__ __inline__ u32 get_cell_index(const float2 p)
     return grid_posx + grid_posy * CELLCOUNTX;
 }
 
-__global__ void put_circles_d(const float2* __restrict__ positions, uchar3* __restrict__ image, const uchar3* __restrict__ logo)
+__global__ void draw_by_bitmap_d(const float2* __restrict__ positions, uchar3* __restrict__ image, const uchar3* __restrict__ logo)
 {
     const auto thread_id = THREAD_ID();
     if (thread_id >= PARTICLECOUNT)
@@ -41,6 +41,90 @@ __global__ void put_circles_d(const float2* __restrict__ positions, uchar3* __re
             if (i * i + j * j <= DRAWDISTSQR)
                 image[(position_y + i)* IMAGEWFULL + position_x + j] = color;
 }
+
+__global__ void draw_speed_d(const float2* __restrict__ positions, uchar3* __restrict__ image, const float2* __restrict__ speeds)
+{
+    const auto thread_id = THREAD_ID();
+    if (thread_id >= PARTICLECOUNT)
+        return;
+
+    const auto position = positions[thread_id];
+    const u32 position_x = static_cast<u32>(position.x);
+    const u32 position_y = static_cast<u32>(position.y);
+
+    if (position_y < RADIUS || position_y >= IMAGEHFULL - RADIUS || position_x < RADIUS || position_x >= IMAGEWFULL - RADIUS)
+        return;
+
+    const auto speed = speeds[thread_id];
+    uchar3 color = { 0,0,0 };
+
+    const float speedC = sqrtf(speed.x*speed.x + speed.y*speed.y) * color_speed_mult;
+
+    if (speedC < 256)
+    {
+        color.x = 255;
+        color.y = speedC;
+    }
+    else if (speedC < 512)
+    {
+        color.y = 255;
+        color.x = 512 - speedC;
+    }
+    else if (speedC < 768)
+    {
+        color.y = 255;
+        color.z = speedC - 512;
+    }
+    else if (speedC < 1024)
+    {
+        color.z = 255;
+        color.y = 1024 - speedC;
+    }
+    else if (speedC < 1280)
+    {
+        color.z = 255;
+        color.x = speedC - 1024;
+    }
+    else if (speedC < 1536)
+    {
+        color.z = 255;
+        color.x = 255;
+        color.y = speedC - 1280;
+    }
+    else
+        color.z = color.y = color.x = 255;
+
+#pragma unroll
+    for (int i = -RADIUS; i <= RADIUS; i++)
+#pragma unroll
+        for (int j = -RADIUS; j <= RADIUS; j++)
+            if (i * i + j * j <= DRAWDISTSQR)
+                image[(position_y + i)* IMAGEWFULL + position_x + j] = color;
+}
+
+__global__ void draw_density_d(const float2* __restrict__ positions, uchar3* __restrict__ image)
+{
+    const auto thread_id = THREAD_ID();
+    if (thread_id >= PARTICLECOUNT)
+        return;
+
+    const auto position = positions[thread_id];
+    const u32 position_x = static_cast<u32>(position.x);
+    const u32 position_y = static_cast<u32>(position.y);
+
+    if (position_y < RADIUS || position_y >= IMAGEHFULL - RADIUS || position_x < RADIUS || position_x >= IMAGEWFULL - RADIUS)
+        return;
+
+    constexpr uchar3 color = { 255,255,255 };
+
+#pragma unroll
+    for (int i = -RADIUS; i <= RADIUS; i++)
+#pragma unroll
+        for (int j = -RADIUS; j <= RADIUS; j++)
+            if (i * i + j * j <= DRAWDISTSQR)
+                image[(position_y + i)* IMAGEWFULL + position_x + j] = color;
+}
+
 
 __global__ void downsample_image_d(const uchar3* __restrict__ input, uchar3* __restrict__ output)
 {
@@ -205,10 +289,22 @@ particle_data::particle_data(const vector<uchar3>& logo_host)
     speeds_stable = speeds_host;
 }
 
-void put_circles(particle_data& data)
+void draw_by_bitmap(particle_data& data)
 {
     data.image.fill_with_zeroes();
-    STARTKERNEL(put_circles_d, PARTICLECOUNT, data.positions_stable.begin(), data.image.begin(), data.logo.begin());
+    STARTKERNEL(draw_by_bitmap_d, PARTICLECOUNT, data.positions_stable.begin(), data.image.begin(), data.logo.begin());
+}
+
+void draw_speed(particle_data& data)
+{
+    data.image.fill_with_zeroes();
+    STARTKERNEL(draw_speed_d, PARTICLECOUNT, data.positions_stable.begin(), data.image.begin(), data.speeds_stable.begin());
+}
+
+void draw_density(particle_data& data)
+{
+    data.image.fill_with_zeroes();
+    STARTKERNEL(draw_density_d, PARTICLECOUNT, data.positions_stable.begin(), data.image.begin());
 }
 
 void downsample_image(const uchar3* input, uchar3* output)

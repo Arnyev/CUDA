@@ -21,11 +21,11 @@ constexpr float BOUND = 80.0f;
 constexpr int RADIUS = 1;
 constexpr u32 DRAWDISTSQR = RADIUS * RADIUS;
 constexpr float COLLISIONDIST = 2 * RADIUS + 1.0f;
-constexpr float SPRINGFORCE = -0.3f;
-constexpr float GRAVITY = -0.002f;
-constexpr float DAMPING = 0.002f;
+constexpr float SPRINGFORCE = -0.5f;
+constexpr float GRAVITY = -0.0006f;
+constexpr float DAMPING = 0.012f;
 constexpr float BOUNDARYFORCE = 0.5f;
-constexpr float SHEARFORCE = 0.01f;
+constexpr float SHEARFORCE = 0.06f;
 
 constexpr u32 DOWNSAMPLING = 16;
 constexpr u32 IMAGEW = 1920;
@@ -38,7 +38,7 @@ constexpr u32 CELLCOUNTX = IMAGEWFULL / CELLSIZE;
 constexpr u32 CELLCOUNTY = IMAGEHFULL / CELLSIZE;
 constexpr u32 CELLCOUNT = CELLCOUNTX * CELLCOUNTY;
 
-constexpr u32 FRAMEDIFF = 10;
+constexpr u32 FRAMEDIFF = 15;
 constexpr u32 FRAMECOUNT = 99999;
 
 constexpr u32 LOGOW = 1016;
@@ -51,12 +51,14 @@ constexpr float STARTINGDIST = COLLISIONDIST + 0.3f;
 constexpr float STARTINGHEIGHT = BOUND + RADIUS;
 constexpr float STARTINGX = (IMAGEWFULL - 2 * BOUND - STARTINGDIST * PARTICLECOUNTX) / 2;
 
-constexpr u32 PARTICLECOUNT(PARTICLECOUNTX*PARTICLECOUNTY);
+constexpr u32 PARTICLECOUNT = PARTICLECOUNTX * PARTICLECOUNTY;
 
 constexpr int sort_bits = get_max_bit(CELLCOUNT);
 
-constexpr float SPEEDFACTORY = 0.4f;
-constexpr float SPEEDFACTORX = 0.4f;
+constexpr float SPEEDFACTORY = 0.2f;
+constexpr float SPEEDFACTORX = 0.2f;
+constexpr float color_speed_mult = 270.0f;
+
 constexpr u32 THREADCOUNT = 16;
 constexpr u32 BLOCKSIZE = 256;
 constexpr u32 GRIDDIM = 2048;

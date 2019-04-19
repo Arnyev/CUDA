@@ -27,6 +27,8 @@ struct particle_data
     explicit particle_data(const vector<uchar3>& logo_host);
 };
 
-void put_circles(particle_data& data);
+void draw_by_bitmap(particle_data& data);
 void downsample_image(const uchar3* input, uchar3* output);
 void process_step(particle_data& particles);
+void draw_speed(particle_data& data);
+void draw_density(particle_data& data);
