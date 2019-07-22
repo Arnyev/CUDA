@@ -11,7 +11,7 @@ struct device_reverse_iterator
     using pointer = T * ;
     using reference = T & ;
     using difference_type = ptrdiff_t;
-    using iterator_category = std::_Really_trivial_ptr_iterator_tag;
+    using iterator_category = std::random_access_iterator_tag;
 
     __host__ __device__ __forceinline__ explicit device_reverse_iterator(T* d_ptr) : d_ptr{ d_ptr } {}
 
