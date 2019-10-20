@@ -246,3 +246,16 @@ __device__ __forceinline__ double3 normalize(double3 v)
 	double invLen = rsqrt(dot(v, v));
 	return v * invLen;
 }
+__device__ __forceinline__ void operator/=(double3& a, double b)
+{
+	a.x /= b;
+	a.y /= b;
+	a.z /= b;
+}
+
+__device__ __forceinline__ void operator*=(double3& a, double b)
+{
+	a.x *= b;
+	a.y *= b;
+	a.z *= b;
+}

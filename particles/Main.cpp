@@ -61,9 +61,9 @@ void save_to_file(const int number, const std::string filename, file_writing_dat
 	data->render_semaphore.notify();
 }
 
-void save(particle_data& particles, const std::string& directory, const u32 frame_number, file_writing_data& files, bool normalize_colors)
+void save(image_data& data, const std::string& directory, const u32 frame_number, file_writing_data& files, bool normalize_colors)
 {
-	downsample_image(particles.image.begin(), particles.image_downsampled.begin(), normalize_colors);
+	downsample_image(data, normalize_colors);
 
 	files.render_semaphore.wait();
 	files.access_mutex.lock();
@@ -74,26 +74,44 @@ void save(particle_data& particles, const std::string& directory, const u32 fram
 	files.bitmaps_free[bitmap_nr] = false;
 	files.access_mutex.unlock();
 
-	files.bitmaps[bitmap_nr] = particles.image_downsampled.copy_to_host();
+	files.bitmaps[bitmap_nr] = data.image_downsampled.copy_to_host();
 
 	std::ostringstream ss;
 	ss << directory << "/image-" << std::setw(5) << std::setfill('0') << frame_number << ".png";
 	std::thread(save_to_file, bitmap_nr, ss.str(), &files).detach();
 }
 
-void get_frame(particle_data& particles, const u32 frame_number, file_writing_data& files)
+void get_frame(device_memory<ftype2>& positions, device_memory<ftype2>& speeds, const u32 frame_number, file_writing_data& files, const device_memory<uchar3>& logo)
 {
+	particle_data particles(std::move(positions), std::move(speeds));
+	print_memory_usage();
+
 	for (u32 j = 0; j < FRAMEDIFF; j++)
 		process_step(particles);
 
-	draw_by_bitmap(particles);
-	save(particles, "pngs", frame_number, files, false);
+	device_memory<ftype2> positions_stable(std::move(particles.positions_stable));
+	device_memory<ftype2> speeds_stable(std::move(particles.speeds_stable));
+	device_memory<ftype2> positions_sort(std::move(particles.positions_sort));
+	device_memory<ftype2> speeds_sort(std::move(particles.speeds_sort));
+	device_memory<u32> cell_starts(std::move(particles.cell_starts));
 
-	draw_direction(particles);
-	save(particles, "pngsdir", frame_number, files, false);
+	particles = particle_data();
+	print_memory_usage();
 
-	draw_force(particles);
-	save(particles, "pngsf", frame_number, files, true);
+	image_data image_data;
+	print_memory_usage();
+
+	draw_by_logo(positions_stable, image_data, logo);
+	save(image_data, "pngs", frame_number, files, false);
+
+	draw_direction(positions_stable, speeds_stable, image_data);
+	save(image_data, "pngsdir", frame_number, files, false);
+
+	draw_force(positions_sort, speeds_sort, cell_starts, image_data);
+	save(image_data, "pngsf", frame_number, files, true);
+
+	positions = std::move(positions_stable);
+	speeds = std::move(speeds_stable);
 }
 
 void run_sim(const vector<uchar3>& logo_host)
@@ -115,14 +133,21 @@ void run_sim(const vector<uchar3>& logo_host)
 			speeds[index].y = (static_cast<double>(rand()) / static_cast<double>(RAND_MAX) - 0.5) * SPEEDFACTORY;
 		}
 	}
-
-	print_memory_usage();
-	particle_data particles(logo_host, positions, speeds);
+	device_memory<uchar3> logo(logo_host);
 	print_memory_usage();
 	file_writing_data files;
+	device_memory<ftype2> positions_device(positions);
+	device_memory<ftype2> speeds_device(speeds);
+	positions.clear();
+	speeds.clear();
+	positions.shrink_to_fit();
+	speeds.shrink_to_fit();
 
 	for (u32 i = 1; i < FRAMECOUNT; i++)
-		std::cout << "Frame took: " << measure::execution_gpu(get_frame, particles, i, files) << '\n';
+	{
+		//get_frame(positions_device, speeds_device, i, files, logo);
+		std::cout << "Frame took: " << measure::execution_gpu(get_frame, positions_device, speeds_device, i, files, logo) << '\n';
+	}
 }
 
 void load_texture(vector<uchar3>& texture, const char* filename)

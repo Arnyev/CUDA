@@ -16,7 +16,7 @@ __device__ __inline__ u32 get_cell_index(const ftype2 p)
 	return grid_posx + grid_posy * CELLCOUNTX;
 }
 
-__global__ void draw_by_bitmap_d(const ftype2* __restrict__ positions, uchar3* __restrict__ image, const uchar3* __restrict__ logo)
+__global__ void draw_by_logo_d(const ftype2* __restrict__ positions, uchar3* __restrict__ image, const uchar3* __restrict__ logo)
 {
 	const auto thread_id = THREAD_ID();
 	if (thread_id >= PARTICLECOUNT)
@@ -42,7 +42,7 @@ __global__ void draw_by_bitmap_d(const ftype2* __restrict__ positions, uchar3* _
 				image[(position_y + i) * IMAGEWFULL + position_x + j] = color;
 }
 
-__global__ void draw_speed_d(const ftype2* __restrict__ positions, uchar3* __restrict__ image, const ftype2* __restrict__ speeds)
+__global__ void draw_by_bitmap_d(const ftype2* __restrict__ positions, uchar3* __restrict__ image, const uchar3* __restrict__ bitmap)
 {
 	const auto thread_id = THREAD_ID();
 	if (thread_id >= PARTICLECOUNT)
@@ -55,54 +55,31 @@ __global__ void draw_speed_d(const ftype2* __restrict__ positions, uchar3* __res
 	if (position_y < RADIUS || position_y >= IMAGEHFULL - RADIUS || position_x < RADIUS || position_x >= IMAGEWFULL - RADIUS)
 		return;
 
-	const auto speed = speeds[thread_id];
-	uchar3 color = { 0,0,0 };
-
-	const float speedC = length(speed) * color_speed_mult;
-
-	if (speedC < 256)
-	{
-		color.x = 255;
-		color.y = speedC;
-	}
-	else if (speedC < 512)
-	{
-		color.y = 255;
-		color.x = 512 - speedC;
-	}
-	else if (speedC < 768)
-	{
-		color.y = 255;
-		color.z = speedC - 512;
-	}
-	else if (speedC < 1024)
-	{
-		color.z = 255;
-		color.y = 1024 - speedC;
-	}
-	else if (speedC < 1280)
-	{
-		color.z = 255;
-		color.x = speedC - 1024;
-	}
-	else if (speedC < 1536)
-	{
-		color.z = 255;
-		color.x = 255;
-		color.y = speedC - 1280;
-	}
-	else
-		color.z = color.y = color.x = 255;
+	const auto color = bitmap[thread_id];
 
 #pragma unroll
 	for (int i = -RADIUS; i <= RADIUS; i++)
 #pragma unroll
 		for (int j = -RADIUS; j <= RADIUS; j++)
-			if (i * i + j * j <= DRAWDISTSQRS)
+			if (i * i + j * j <= DRAWDISTSQR)
 				image[(position_y + i) * IMAGEWFULL + position_x + j] = color;
 }
 
-__global__ void draw_direction_d(const ftype2* __restrict__ positions, uchar3* __restrict__ image, const ftype2* __restrict__ speeds)
+__device__ __forceinline__ float3 get_base_color(const ftype2 vector)
+{
+	const auto normalised_vector = normalize(vector);
+
+	constexpr ftype2 v1 = { 0,1 };
+	constexpr ftype2 v2 = { -0.86602540378,-0.5f };
+	constexpr ftype2 v3 = { 0.86602540378,-0.5f };
+
+	const float cos1 = acosf(dot(normalised_vector, v1));
+	const float cos2 = acosf(dot(normalised_vector, v2));
+	const float cos3 = acosf(dot(normalised_vector, v3));
+	return normalize(float3{ cos1, cos2, cos3 });
+}
+
+__global__ void draw_direction_d(const ftype2* __restrict__ positions, const ftype2* __restrict__ speeds, uchar3* __restrict__ image)
 {
 	const auto thread_id = THREAD_ID();
 	if (thread_id >= PARTICLECOUNT)
@@ -115,21 +92,13 @@ __global__ void draw_direction_d(const ftype2* __restrict__ positions, uchar3* _
 	if (position_y < RADIUS || position_y >= IMAGEHFULL - RADIUS || position_x < RADIUS || position_x >= IMAGEWFULL - RADIUS)
 		return;
 
-	constexpr ftype2 v1 = { 0,1 };
-	constexpr ftype2 v2 = { -0.86602540378,-0.5f };
-	constexpr ftype2 v3 = { 0.86602540378,-0.5f };
-
 	const auto speed = speeds[thread_id];
-	const auto norm_speed = normalize(speed);
-	const float cos1 = acosf(dot(norm_speed, v1));
-	const float cos2 = acosf(dot(norm_speed, v2));
-	const float cos3 = acosf(dot(norm_speed, v3));
 
 	float mult = base_color_intensity + length(speed) * color_intensity_multiplier;
 	if (mult > 256.0f)
 		mult = 256.0f;
 
-	const float3 colorf = mult * normalize(float3{ cos1, cos2, cos3 });
+	const float3 colorf = mult * get_base_color(speed);
 	const uchar3 color = { static_cast<u8>(colorf.x),static_cast<u8>(colorf.y),static_cast<u8>(colorf.z) };
 
 #pragma unroll
@@ -163,11 +132,6 @@ __global__ void draw_density_d(const ftype2* __restrict__ positions, uchar3* __r
 				image[(position_y + i) * IMAGEWFULL + position_x + j] = color;
 }
 
-__device__ __inline__  double maax(double a, double b)
-{
-	return a > b ? a : b;
-}
-
 __global__ void downsample_image_d(const uchar3* __restrict__ input, uchar3* __restrict__ output, bool normalize_colors)
 {
 	const u32 thread_id = THREAD_ID();
@@ -194,23 +158,15 @@ __global__ void downsample_image_d(const uchar3* __restrict__ input, uchar3* __r
 	}
 
 	double3 colord = { color_tmp.x ,color_tmp.y,color_tmp.z };
+	colord /= DOWNSAMPLING * DOWNSAMPLING;
 
-	colord.x /= (DOWNSAMPLING * DOWNSAMPLING);
-	colord.y /= (DOWNSAMPLING * DOWNSAMPLING);
-	colord.z /= (DOWNSAMPLING * DOWNSAMPLING);
 	if (normalize_colors)
 	{
-		colord.x *= 3.0;
-		colord.y *= 3.0;
-		colord.z *= 3.0;
+		colord *= 3.0;
 
-		double maxdim = maax(maax(colord.x, colord.y), colord.z);
+		double maxdim = colord.x > colord.y ? (colord.x > colord.z ? colord.x : colord.z) : (colord.y > colord.z ? colord.y : colord.z);
 		if (maxdim > 255)
-		{
-			colord.x *= 255.0 / maxdim;
-			colord.y *= 255.0 / maxdim;
-			colord.z *= 255.0 / maxdim;
-		}
+			colord *= 255.0 / maxdim;
 	}
 	colord.x = colord.x > 255 ? 255 : colord.x;
 	colord.y = colord.y > 255 ? 255 : colord.y;
@@ -301,38 +257,49 @@ __global__ void process_particles_d(const ftype2* __restrict__ positions_in, con
 	speeds_out[out_index] = newSpeed;
 }
 
-__global__ void draw_forces_d(const ftype2* __restrict__ positions_in, const ftype2* __restrict__ speeds_in, const u32* __restrict__ cell_starts, uchar3* __restrict__ image)
+__global__ void compute_acceleration_colors_d(const ftype2* __restrict__ positions, const ftype2* __restrict__ speeds, const u32* __restrict__ cell_starts, uchar3* __restrict__ colors)
 {
 	const auto thread_id = THREAD_ID();
 	if (thread_id >= PARTICLECOUNT)
 		return;
 
-	const ftype2 position = positions_in[thread_id];
+	const ftype2 position = positions[thread_id];
+
+	ftype2 acceleration = { 0, GRAVITY };
+	acceleration += process_collisions(thread_id, position, speeds[thread_id], cell_starts, positions, speeds);
+	acceleration += process_bounds(position);
+
+	float mult = sqrt(length(acceleration)) * color_intensity_multiplier;
+	if (mult > 256.0f)
+		mult = 256.0f;
+
+	const float3 colorf = mult * get_base_color(acceleration);
+	const uchar3 color = { static_cast<u8>(colorf.x),static_cast<u8>(colorf.y),static_cast<u8>(colorf.z) };
+	colors[thread_id] = color;
+}
+
+__global__ void draw_forces_d(const ftype2* __restrict__ positions, const ftype2* __restrict__ speeds, const u32* __restrict__ cell_starts, uchar3* __restrict__ image)
+{
+	const auto thread_id = THREAD_ID();
+	if (thread_id >= PARTICLECOUNT)
+		return;
+
+	const auto position = positions[thread_id];
 	const u32 position_x = static_cast<u32>(position.x);
 	const u32 position_y = static_cast<u32>(position.y);
 
 	if (position_y < RADIUS || position_y >= IMAGEHFULL - RADIUS || position_x < RADIUS || position_x >= IMAGEWFULL - RADIUS)
 		return;
 
-	ftype2 force = { 0, GRAVITY };
+	ftype2 acceleration = { 0, GRAVITY };
+	acceleration += process_collisions(thread_id, position, speeds[thread_id], cell_starts, positions, speeds);
+	acceleration += process_bounds(position);
 
-	force += process_collisions(thread_id, position, speeds_in[thread_id], cell_starts, positions_in, speeds_in);
-	force += process_bounds(position);
-
-	constexpr ftype2 v1 = { 0,1 };
-	constexpr ftype2 v2 = { -0.86602540378,-0.5f };
-	constexpr ftype2 v3 = { 0.86602540378,-0.5f };
-
-	const auto norm_force = normalize(force);
-	const float cos1 = acosf(dot(norm_force, v1));
-	const float cos2 = acosf(dot(norm_force, v2));
-	const float cos3 = acosf(dot(norm_force, v3));
-
-	float mult = sqrt(length(force)) * color_intensity_multiplier;
+	float mult = sqrt(length(acceleration)) * color_intensity_multiplier;
 	if (mult > 256.0f)
 		mult = 256.0f;
 
-	const float3 colorf = mult * normalize(float3{ cos1, cos2, cos3 });
+	const float3 colorf = mult * get_base_color(acceleration);
 	const uchar3 color = { static_cast<u8>(colorf.x),static_cast<u8>(colorf.y),static_cast<u8>(colorf.z) };
 
 #pragma unroll
@@ -353,39 +320,38 @@ __global__ void compute_cell_and_sequence_d(const ftype2* __restrict__ positions
 	indices[thread_id] = thread_id;
 }
 
-void draw_by_bitmap(particle_data& data)
+void draw_by_logo(const device_memory<ftype2>& positions_stable, image_data& image_data, const device_memory<uchar3>& logo)
 {
-	data.image.fill_with_zeroes();
-	STARTKERNEL(draw_by_bitmap_d, PARTICLECOUNT, data.positions_stable.begin(), data.image.begin(), data.logo.begin());
+	image_data.image.fill_with_zeroes();
+	STARTKERNEL(draw_by_logo_d, PARTICLECOUNT, positions_stable.begin(), image_data.image.begin(), logo.begin());
 }
 
-void draw_speed(particle_data& data)
+void draw_force(const device_memory<ftype2>& positions_sort, const device_memory<ftype2>& speeds_sort, const device_memory<u32>& cell_starts, image_data& image_data)
 {
-	data.image.fill_with_zeroes();
-	STARTKERNEL(draw_speed_d, PARTICLECOUNT, data.positions_stable.begin(), data.image.begin(), data.speeds_stable.begin());
+	image_data.image.fill_with_zeroes();
+	STARTKERNEL(draw_forces_d, PARTICLECOUNT, positions_sort.begin(), speeds_sort.begin(), cell_starts.begin(), image_data.image.begin());
 }
 
-void draw_force(particle_data& data)
+void draw_direction(const device_memory<ftype2>& positions_stable, const device_memory<ftype2>& speeds_stable, image_data& image_data)
 {
-	data.image.fill_with_zeroes();
-	STARTKERNEL(draw_forces_d, PARTICLECOUNT, data.positions_sort.begin(), data.speeds_sort.begin(), data.cell_starts.begin(), data.image.begin());
+	image_data.image.fill_with_zeroes();
+	STARTKERNEL(draw_direction_d, PARTICLECOUNT, positions_stable.begin(), speeds_stable.begin(), image_data.image.begin());
 }
 
-void draw_direction(particle_data& data)
+void draw_density(const device_memory<ftype2>& positions_stable, image_data& image_data)
 {
-	data.image.fill_with_zeroes();
-	STARTKERNEL(draw_direction_d, PARTICLECOUNT, data.positions_stable.begin(), data.image.begin(), data.speeds_stable.begin());
+	image_data.image.fill_with_zeroes();
+	STARTKERNEL(draw_density_d, PARTICLECOUNT, positions_stable.begin(), image_data.image.begin());
 }
 
-void draw_density(particle_data& data)
+void downsample_image(image_data& image_data, bool normalize_colors)
 {
-	data.image.fill_with_zeroes();
-	STARTKERNEL(draw_density_d, PARTICLECOUNT, data.positions_stable.begin(), data.image.begin());
+	STARTKERNEL(downsample_image_d, IMAGEH * IMAGEW, image_data.image.begin(), image_data.image_downsampled.begin(), normalize_colors);
 }
 
-void downsample_image(const uchar3* input, uchar3* output, bool normalize_colors)
+void compute_acceleration_colors(const particle_data& data, device_memory<uchar3>& colors)
 {
-	STARTKERNEL(downsample_image_d, IMAGEH * IMAGEW, input, output, normalize_colors);
+	STARTKERNEL(compute_acceleration_colors_d, PARTICLECOUNT, data.positions_sort.begin(), data.speeds_sort.begin(), data.cell_starts.begin(), colors.begin());
 }
 
 void sort_particles(particle_data& particles)
@@ -513,11 +479,10 @@ size_t get_needed_storage()
 	return needed_storage_sort > needed_storage_scan ? needed_storage_sort : needed_storage_scan;;
 }
 
-particle_data::particle_data(const vector<uchar3>& logo_host, const vector<ftype2>& positions, const vector<ftype2>& speeds)
+particle_data::particle_data(device_memory<ftype2>&& positions, device_memory<ftype2>&& speeds)
 {
-	logo = logo_host;
-	positions_stable = positions;
-	speeds_stable = speeds;
+	positions_stable = std::move(positions);
+	speeds_stable = std::move(speeds);
 
 	indices.resize(PARTICLECOUNT);
 	indices_helper.resize(PARTICLECOUNT);
@@ -528,8 +493,12 @@ particle_data::particle_data(const vector<uchar3>& logo_host, const vector<ftype
 	positions_sort.resize(PARTICLECOUNT);
 	speeds_sort.resize(PARTICLECOUNT);
 	cell_starts.resize(CELLCOUNT);
-	image.resize(IMAGEWFULL * IMAGEHFULL);
-	image_downsampled.resize(IMAGEW * IMAGEH);
 
 	helper_storage.resize(get_needed_storage());
+}
+
+image_data::image_data()
+{
+	image.resize(IMAGEWFULL * IMAGEHFULL);
+	image_downsampled.resize(IMAGEW * IMAGEH);
 }
